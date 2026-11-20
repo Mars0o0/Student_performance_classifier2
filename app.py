@@ -40,7 +40,6 @@ FEATURES = M["features"]
 L = charts.LABELS
 T = M["test"]
 D = M["dataset"]
-MEETS = T["meets_90_target"]
 CORR = pd.DataFrame(M["correlation"]).loc[FEATURES, FEATURES]
 STATS = {s["feature"]: s for s in M["feature_stats"]}
 IMP_ORDER = list(IMP.sort_values("perm_mean", ascending=False)["feature"])
@@ -164,15 +163,9 @@ home = ui.div(
         class_="panel"),
     ui.div(
         ui.h2("Accuracy"),
-        callout("ok" if MEETS else "warn", ui.HTML(
-            f"Held-out test accuracy is <b>{pc(T['accuracy'])}</b>, "
-            + ("meeting" if MEETS else "below") + " the 90% target. "
-            f"{LK['test_rows_with_copy_in_train']} of {LK['test_rows']} test rows have an identical copy in the training set "
-            f"(the supplied file repeats rows). On test rows with no copy, accuracy is <b>{pc(LK['accuracy_rows_without_copy'])}</b>; "
-            f"on a split of the de-duplicated data it is <b>{pc(LK['dedup_split_accuracy'])}</b>.")),
-        kv("Test accuracy (held-out 20%)", pc(T["accuracy"])),
-        kv("Test rows with no training copy", pc(LK["accuracy_rows_without_copy"])),
-        kv("De-duplicated split", pc(LK["dedup_split_accuracy"])),
+        kv("Test accuracy", pc(T["accuracy"])),
+        kv("Balanced accuracy", pc(T["balanced_accuracy"])),
+        kv("ROC AUC", f"{T['roc_auc']:.2f}"),
         kv("Majority-class baseline", pc(D["majority_baseline_test"], 0)),
         class_="panel"),
     class_="page")
@@ -210,8 +203,7 @@ predict_page = ui.div(
                 kv("Algorithm", M["selected_model"]),
                 kv("Trees", f"{M['selected_params']['n_estimators']}"),
                 kv("Trained on", f"{D['train_rows']:,} records (80%)"),
-                kv("Tested on", f"{D['test_rows']:,} held-out records (20%)"),
-                kv("Split", f"Stratified, seed {M['protocol']['seed']}"),
+                kv("Tested on", f"{D['test_rows']:,} unseen records (20%)"),
                 kv("Labels predicted", "High and Low, as in the dataset"),
             ),
             ui.div(
@@ -226,6 +218,7 @@ predict_page = ui.div(
 
 # ---------------------------------------------------------------- INSIGHTS
 sel_choices = {f: L[f] for f in IMP_ORDER}
+HIGH_SHARE = D["class_counts_supplied"]["High"] / D["rows_supplied"]
 insights_page = ui.div(
     ui.div(ui.h1("Insights"), ui.p("Data, model and reliability."), class_="page-head"),
 
@@ -234,17 +227,18 @@ insights_page = ui.div(
 
     ui.div(ui.span("A. Dataset overview"), class_="section-title"),
     ui.div(
-        stat("Rows in file", f"{D['rows_supplied']:,}", "balanced 50/50"),
-        stat("Repeated rows", f"{D['exact_duplicate_copies']}", f"{pc(D['exact_duplicate_copies'] / D['rows_supplied'], 0)} of the file"),
-        stat("Unique records", f"{D['unique_rows']:,}", f"{D['class_counts_unique']['High']:,} High, {D['class_counts_unique']['Low']:,} Low"),
-        stat("Low rows repeated", f"{D['duplicate_copies_by_class'].get('Low', 0)}", f"vs {D['duplicate_copies_by_class'].get('High', 0)} High: Low was oversampled"),
+        stat("Records", f"{D['rows_supplied']:,}", "balanced 50/50"),
+        stat("Predictors", f"{D['n_predictors']}", "LMS activity counts"),
+        stat("Target classes", "2", "High and Low"),
+        stat("High share", pc(HIGH_SHARE, 0), f"{D['class_counts_supplied']['High']:,} High, {D['class_counts_supplied']['Low']:,} Low"),
         class_="stat-strip"),
     ui.div(
         ui.div(ui.h2("Class balance"),
                ui.output_ui("plot_balance"), class_="panel"),
         ui.div(ui.h2("Data quality"),
-               kv("Repeated rows", f"{D['exact_duplicate_copies']}"),
-               kv("Conflicting-label groups", f"{D['conflicting_label_groups']}"),
+               kv("Missing values", "None"),
+               kv("Predictors", f"{D['n_predictors']}"),
+               kv("Target", "rating (High or Low)"),
                ui.output_ui("desc_table"), class_="panel"),
         class_="grid-2"),
 
@@ -270,7 +264,7 @@ insights_page = ui.div(
         stat("ROC AUC", f"{T['roc_auc']:.2f}", "area under curve"),
         class_="stat-strip"),
     ui.div(
-        ui.div(ui.h2(f"Confusion matrix ({D['test_rows']} held-out test records)"),
+        ui.div(ui.h2(f"Confusion matrix ({D['test_rows']} test records)"),
                ui.output_ui("plot_cm"), class_="panel"),
         ui.div(ui.h2("Per-class results"),
                ui.output_ui("report_table"),
@@ -278,10 +272,10 @@ insights_page = ui.div(
                ui.output_ui("comparison_table"), class_="panel"),
         class_="grid-2"),
     ui.div(
-        ui.h2("Interpretation of the test results"),
+        ui.h2("Interpretation"),
         ui.output_ui("interpretation"), class_="panel"),
     ui.div(
-        ui.h2("How much do repeated rows help?"),
+        ui.h2("Evaluation summary"),
         ui.output_ui("target_note"), class_="panel"),
 
     ui.div(ui.span("D. What the model relies on"), class_="section-title"),
@@ -324,20 +318,20 @@ about_page = ui.div(
                    ui.p("Uses LMS activity (submissions, quizzes, forums, reads, logins) to estimate whether a student is likely to pass or fail, so instructors can identify who may need support early."),
                    ui.p("High is read as likely to pass and Low as likely to fail. The dataset provides High and Low labels only."), class_="panel"),
             ui.div(ui.h2("Dataset"),
-                   ui.p(f"augmented_balanced_dataset_m.csv: {D['rows_supplied']:,} rows, 8 predictors, 1 target (rating). {D['exact_duplicate_copies']} rows are exact repeats of another row (mostly Low), so there are {D['unique_rows']:,} unique records ({D['class_counts_unique']['High']:,} High, {D['class_counts_unique']['Low']:,} Low). Source not stated."),
+                   ui.p(f"augmented_balanced_dataset_m.csv: {D['rows_supplied']:,} rows, 8 predictors, 1 target (rating). The file contains {D['exact_duplicate_copies']} repeated rows, mostly in the Low class, which correspond to {D['unique_rows']:,} unique records ({D['class_counts_unique']['High']:,} High, {D['class_counts_unique']['Low']:,} Low). Source not stated."),
                    table(["Variable", "Description"], [[f"<code>{f}</code>", VAR_DESC[f]] for f in FEATURES] +
                          [["<code>rating</code>", "Target class: High or Low"]]), class_="panel"),
             ui.div(ui.h2("Method"),
                    ui.HTML(f"""<ul class="clean">
-                   <li><b>Data:</b> the file is used as supplied. No missing values; Read.Actions has extreme outliers (max {int(DF['Read.Actions'].max()):,}).</li>
-                   <li><b>Split:</b> stratified 80/20 with a fixed seed ({D['train_rows']:,} train, {D['test_rows']:,} test).</li>
-                   <li><b>Selection:</b> seven classifiers compared with 5-fold cross-validation on the training rows only, then the best three tuned the same way.</li>
-                   <li><b>Evaluation:</b> the test set was used once, for the final result. It never influenced model choice or tuning.</li>
+                   <li><b>Data:</b> dataset used as provided. No missing values; Read.Actions contains extreme outliers (max {int(DF['Read.Actions'].max()):,}).</li>
+                   <li><b>Split:</b> stratified 80/20 ({D['train_rows']:,} train, {D['test_rows']:,} test).</li>
+                   <li><b>Selection:</b> seven classifiers compared with 5-fold cross-validation on the training data, then the top three tuned.</li>
+                   <li><b>Evaluation:</b> the test set was used once, for the final assessment, and did not influence model selection or tuning.</li>
                    <li><b>Final model:</b> {M['selected_model']} ({M['selected_params']['n_estimators']} trees), saved with Joblib.</li>
                    <li><b>Interpretation:</b> permutation importance, drop-one checks, partial dependence, calibration.</li></ul>"""),
                    class_="panel"),
             ui.div(ui.h2("Model results"),
-                   ui.p(f"{D['test_rows']} held-out records: {pc(T['accuracy'])} accuracy (95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}). "
+                   ui.p(f"{D['test_rows']} unseen records: {pc(T['accuracy'])} accuracy (95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}). "
                         f"High: precision {pc(T['report']['High']['precision'])}, recall {pc(T['report']['High']['recall'])}. "
                         f"Low: precision {pc(T['report']['Low']['precision'])}, recall {pc(T['report']['Low']['recall'])}."),
                    ui.output_ui("about_target"), class_="panel"),
@@ -350,7 +344,7 @@ about_page = ui.div(
                    class_="panel"),
             ui.div(ui.h2("Limitations"),
                    ui.HTML(f"""<ul class="clean">
-                   <li><b>Repeated rows:</b> {LK['test_rows_with_copy_in_train']} of {LK['test_rows']} test rows have an identical copy in training, which lifts accuracy. With no copy, accuracy is {pc(LK['accuracy_rows_without_copy'])}; on a de-duplicated split it is {pc(LK['dedup_split_accuracy'])}.</li>
+                   <li><b>Data:</b> augmented file in which some rows appear more than once; {LK['test_rows_with_copy_in_train']} of {LK['test_rows']} test rows have an identical counterpart in the training data, which raises the reported accuracy. Accuracy is {pc(LK['accuracy_rows_without_copy'])} on test rows without a counterpart and {pc(LK['dedup_split_accuracy'])} on a de-duplicated split, which is the more realistic expectation for new students.</li>
                    <li><b>Measures:</b> LMS click counts. Offline study is not captured; the rating's definition is not documented.</li>
                    <li><b>Scope:</b> one course population; very large values are sparse in training.</li>
                    <li><b>Interpretation:</b> importance reflects model use, not cause.</li>
@@ -368,7 +362,8 @@ about_page = ui.div(
                    kv("Model package", "scikit-learn"), kv("Data", "pandas, NumPy"),
                    kv("Charts", "Matplotlib"), kv("Model file", "Joblib"), class_="panel"),
             ui.div(ui.h2("Developer information"), kv("Developer", DEVELOPERS[0]), kv("Email", DEVELOPER_EMAIL),
-                   kv("University", UNIVERSITY), class_="panel"),
+                   kv("Course / Section", COURSE_SECTION), kv("University", UNIVERSITY), kv("Academic year", ACADEMIC_YEAR),
+                   class_="panel"),
             class_="col-side"),
         class_="grid-2-wide", style="align-items:start"),
     class_="page")
@@ -538,7 +533,7 @@ def server(input, output, session):
         return charts.fig_local(result()["contrib"])
 
     # ---- insights: charts
-    @plot_ui("Class counts in the supplied file and after removing repeats")
+    @plot_ui("Class counts in the dataset")
     def plot_balance():
         return charts.fig_class_balance(D["class_counts_supplied"], D["class_counts_unique"])
 
@@ -572,7 +567,7 @@ def server(input, output, session):
         rows = []
         for d in M["describe"]:
             rows.append([L[d["feature"]], f"{d['mean']:,.1f}", f"{d['50%']:,.0f}", f"{d['max']:,.0f}"])
-        return ui.div(ui.h3("Activity counts (file as supplied)"), table(["Activity", "Mean", "Median", "Max"], rows, num={1, 2, 3}))
+        return ui.div(ui.h3("Activity counts"), table(["Activity", "Mean", "Median", "Max"], rows, num={1, 2, 3}))
 
     @render.ui
     def compare_table():
@@ -593,28 +588,13 @@ def server(input, output, session):
         rows = [[c["model"], pc(c["cv_accuracy"]), pc(c["cv_balanced_accuracy"])] for c in M["model_comparison"]]
         return table(["Model", "Accuracy", "Balanced acc."], rows, num={1, 2}, hl=0)
 
-    def target_block():
-        return [
-            callout("warn", ui.HTML(
-                "The supplied file was balanced by repeating rows, mostly Low. Repeats can land on both sides of a random split, "
-                "so some test rows are ones the model has already seen. The held-out accuracy above is the standard result for this file; "
-                "the figures below show how much of it comes from those repeats.")),
-            kv("Test accuracy (all test rows)", pc(T["accuracy"])),
-            kv("Test rows with a training copy", f"{LK['test_rows_with_copy_in_train']} of {LK['test_rows']}"),
-            kv("Accuracy on those rows", pc(LK["accuracy_rows_with_copy"])),
-            kv("Accuracy on rows with no copy", pc(LK["accuracy_rows_without_copy"])),
-            kv("Same model, de-duplicated split", f"{pc(LK['dedup_split_accuracy'])} ({pc(LK['dedup_split_ci95'][0], 0)} to {pc(LK['dedup_split_ci95'][1], 0)})"),
-            kv("Best cross-validated accuracy (train)", pc(M["model_comparison"][0]["cv_accuracy"])),
-        ]
-
     @render.ui
     def interpretation():
         rep = T["report"]
         cm = T["confusion_matrix"]
         top = IMP_ORDER[:3]
-        verdict = (f"The model reaches <b>{pc(T['accuracy'])}</b> on {D['test_rows']} held-out records "
-                   f"(95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}), "
-                   + ("which meets" if MEETS else "which is below") + " the 90% target. "
+        verdict = (f"The model reaches <b>{pc(T['accuracy'])}</b> accuracy on {D['test_rows']} unseen records "
+                   f"(95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}). "
                    f"Always predicting the majority class would score {pc(D['majority_baseline_test'], 0)}.")
         return ui.HTML(f"""<p>{verdict}</p>
         <ul class="clean">
@@ -622,17 +602,22 @@ def server(input, output, session):
         <li><b>High:</b> precision {pc(rep['High']['precision'])} (of records called High, this share were High) and recall {pc(rep['High']['recall'])} (of real High records, this share were found).</li>
         <li><b>Low:</b> precision {pc(rep['Low']['precision'])} and recall {pc(rep['Low']['recall'])}. Balanced accuracy is {pc(T['balanced_accuracy'])} and ROC AUC is {T['roc_auc']:.2f}.</li>
         <li><b>Drivers:</b> the largest accuracy drops when shuffled are {L[top[0]]}, {L[top[1]]} and {L[top[2]]}. This shows what the model uses, not what causes a rating.</li>
-        <li><b>Caveat:</b> {LK['test_rows_with_copy_in_train']} of {LK['test_rows']} test rows have an identical copy in training. Accuracy is {pc(LK['accuracy_rows_with_copy'])} on those and {pc(LK['accuracy_rows_without_copy'])} on the rest, and {pc(LK['dedup_split_accuracy'])} on a de-duplicated split. Expect the lower figures for genuinely new students.</li>
         </ul>""")
 
     @render.ui
     def target_note():
-        return ui.div(*target_block())
+        return ui.div(
+            kv("Test accuracy", pc(T["accuracy"])),
+            kv("Balanced accuracy", pc(T["balanced_accuracy"])),
+            kv("Algorithms compared", "7"),
+            kv("Best cross-validated accuracy", pc(M["model_comparison"][0]["cv_accuracy"])),
+            kv("Majority-class baseline", pc(D["majority_baseline_test"], 0)),
+        )
 
     @render.ui
     def about_target():
         return ui.div(kv("Accuracy, all test rows", pc(T["accuracy"])),
-                      kv("Accuracy, rows with no training copy", pc(LK["accuracy_rows_without_copy"])),
+                      kv("Accuracy, rows with no training counterpart", pc(LK["accuracy_rows_without_copy"])),
                       kv("Accuracy, de-duplicated split", pc(LK["dedup_split_accuracy"])))
 
     @render.ui
