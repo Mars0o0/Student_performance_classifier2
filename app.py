@@ -362,7 +362,6 @@ about_page = ui.div(
                    kv("Model package", "scikit-learn"), kv("Data", "pandas, NumPy"),
                    kv("Charts", "Matplotlib"), kv("Model file", "Joblib"), class_="panel"),
             ui.div(ui.h2("Developer information"), kv("Developer", DEVELOPERS[0]), kv("Email", DEVELOPER_EMAIL),
-                   kv("Course / Section", COURSE_SECTION), kv("University", UNIVERSITY), kv("Academic year", ACADEMIC_YEAR),
                    class_="panel"),
             class_="col-side"),
         class_="grid-2-wide", style="align-items:start"),
