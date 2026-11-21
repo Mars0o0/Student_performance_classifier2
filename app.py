@@ -32,14 +32,34 @@ model = joblib.load(ROOT / "model.pkl")
 M = json.loads((ROOT / "model_metrics.json").read_text())
 IMP = pd.read_csv(ROOT / "feature_importance.csv")
 RAW = pd.read_csv(ROOT / "data" / "augmented_balanced_dataset_m.csv")
-DF = RAW.copy()                                    # the file as supplied (what the model was trained/tested on)
-LK = M["leak_check"]
-N_ALL = len(DF)
+DF = RAW.drop_duplicates().reset_index(drop=True)  # the 2,720 unique records
 
 FEATURES = M["features"]
 L = charts.LABELS
 T = M["test"]
 D = M["dataset"]
+
+# Metrics files differ between runs. Normalize them so the labels always match the numbers.
+if "leak_check" in M:  # run evaluated on the original split; T is the original-data result
+    _lk = M["leak_check"]
+    EVAL = "original data"
+    ORIG = {"acc": T["accuracy"], "n": D["test_rows"]}
+    DEDUP = {"acc": _lk["dedup_split_accuracy"], "ci": _lk["dedup_split_ci95"], "n": _lk["dedup_split_test_rows"]}
+    DUP_TEST = (_lk["test_rows_with_copy_in_train"], _lk["test_rows"])
+    CLEAN_NOTE = f"duplicate rows kept as supplied ({D['exact_duplicate_copies']})."
+    SPLIT_NOTE = ""
+    DATA_NOTE = f"augmented file with {D['exact_duplicate_copies']} duplicate rows, present in both training and test data."
+else:  # run evaluated on deduplicated data; T is the deduplicated result
+    _rs = M["raw_split_comparison"]
+    EVAL = "deduplicated data"
+    ORIG = {"acc": _rs["test_accuracy"], "n": _rs["test_rows"]}
+    DEDUP = {"acc": T["accuracy"], "ci": T["accuracy_ci95"], "n": D["test_rows"]}
+    DUP_TEST = (_rs["test_rows_with_exact_copy_in_train"], _rs["test_rows"])
+    CLEAN_NOTE = "duplicate rows removed before splitting."
+    SPLIT_NOTE = " after deduplication"
+    DATA_NOTE = f"augmented file; {D['exact_duplicate_copies']} duplicate rows removed."
+SEL_NOTE = (" Selection used training data only; the test set was evaluated once."
+            if M.get("protocol", {}).get("test_evaluations") == 1 else "")
 CORR = pd.DataFrame(M["correlation"]).loc[FEATURES, FEATURES]
 STATS = {s["feature"]: s for s in M["feature_stats"]}
 IMP_ORDER = list(IMP.sort_values("perm_mean", ascending=False)["feature"])
@@ -135,9 +155,11 @@ sidebar = ui.div(
         class_="brand"),
     ui.div(nav_button("home", "Home", True), nav_button("predict", "Predict"),
            nav_button("insights", "Insights"), nav_button("about", "About"), class_="nav"),
-    ui.div(ui.div("Test accuracy", class_="k"),
-           ui.div(pc(T["accuracy"]), class_="v"),
-           ui.p("Decision-support estimate."),
+    ui.div(ui.div("Original data", class_="k"),
+           ui.div(pc(ORIG["acc"]), class_="v"),
+           ui.div("Deduplicated", class_="k", style="margin-top:10px"),
+           ui.div(pc(DEDUP["acc"]), class_="v"),
+           ui.p("Decision support only."),
            class_="side-card"),
     class_="side")
 
@@ -146,10 +168,10 @@ home = ui.div(
     ui.div(ui.h1("Student Performance Classifier"),
            ui.p("Predicts whether a student is likely to pass or fail from LMS activity."), class_="page-head"),
     ui.div(
-        stat("Records", f"{D['rows_supplied']:,}", f"{D['train_rows']:,} train, {D['test_rows']:,} test"),
-        stat("Predictors", f"{D['n_predictors']}", "Activity counts"),
+        stat("Unique records", f"{D['unique_rows']:,}", f"from {D['rows_supplied']:,} rows"),
         stat("Model", M["selected_model"], f"{M['selected_params']['n_estimators']} trees"),
-        stat("Test accuracy", pc(T["accuracy"]), f"95% range {pc(T['accuracy_ci95'][0], 0)} to {pc(T['accuracy_ci95'][1], 0)}"),
+        stat("Original data", pc(ORIG["acc"]), f"{ORIG['n']} test records"),
+        stat("Deduplicated", pc(DEDUP["acc"]), f"{DEDUP['n']} test records"),
         class_="stat-strip"),
     ui.div(
         ui.h2("How to use"),
@@ -163,10 +185,10 @@ home = ui.div(
         class_="panel"),
     ui.div(
         ui.h2("Accuracy"),
-        kv("Test accuracy", pc(T["accuracy"])),
-        kv("Balanced accuracy", pc(T["balanced_accuracy"])),
-        kv("ROC AUC", f"{T['roc_auc']:.2f}"),
-        kv("Majority-class baseline", pc(D["majority_baseline_test"], 0)),
+        kv("Original data", pc(ORIG["acc"])),
+        kv("Deduplicated data", pc(DEDUP["acc"])),
+        kv("Duplicate rows", f"{D['exact_duplicate_copies']}"),
+        kv(f"Majority-class baseline, {EVAL}", pc(D["majority_baseline_train"], 0)),
         class_="panel"),
     class_="page")
 
@@ -202,12 +224,13 @@ predict_page = ui.div(
             ui.div(
                 kv("Algorithm", M["selected_model"]),
                 kv("Trees", f"{M['selected_params']['n_estimators']}"),
-                kv("Trained on", f"{D['train_rows']:,} records (80%)"),
-                kv("Tested on", f"{D['test_rows']:,} unseen records (20%)"),
+                kv("Trained on", f"{D['train_rows']:,} unique records (80%)"),
+                kv("Test set", f"{D['test_rows']:,} records (20%), {EVAL}"),
                 kv("Labels predicted", "High and Low, as in the dataset"),
             ),
             ui.div(
-                ui.div(ui.div(ui.div("Accuracy", class_="k"), ui.div(pc(T["accuracy"]), class_="v"), class_="mini"),
+                ui.div(ui.div(ui.div("Original data", class_="k"), ui.div(pc(ORIG["acc"]), class_="v"), class_="mini"),
+                       ui.div(ui.div("Deduplicated", class_="k"), ui.div(pc(DEDUP["acc"]), class_="v"), class_="mini"),
                        ui.div(ui.div("High recall", class_="k"), ui.div(pc(T["report"]["High"]["recall"]), class_="v"), class_="mini"),
                        ui.div(ui.div("Low recall", class_="k"), ui.div(pc(T["report"]["Low"]["recall"]), class_="v"), class_="mini"),
                        class_="mini-stats"),
@@ -218,7 +241,6 @@ predict_page = ui.div(
 
 # ---------------------------------------------------------------- INSIGHTS
 sel_choices = {f: L[f] for f in IMP_ORDER}
-HIGH_SHARE = D["class_counts_supplied"]["High"] / D["rows_supplied"]
 insights_page = ui.div(
     ui.div(ui.h1("Insights"), ui.p("Data, model and reliability."), class_="page-head"),
 
@@ -227,18 +249,17 @@ insights_page = ui.div(
 
     ui.div(ui.span("A. Dataset overview"), class_="section-title"),
     ui.div(
-        stat("Records", f"{D['rows_supplied']:,}", "balanced 50/50"),
-        stat("Predictors", f"{D['n_predictors']}", "LMS activity counts"),
-        stat("Target classes", "2", "High and Low"),
-        stat("High share", pc(HIGH_SHARE, 0), f"{D['class_counts_supplied']['High']:,} High, {D['class_counts_supplied']['Low']:,} Low"),
+        stat("Rows in file", f"{D['rows_supplied']:,}", "before cleaning"),
+        stat("Duplicate rows", f"{D['exact_duplicate_copies']}", f"{pc(D['exact_duplicate_copies'] / D['rows_supplied'], 0)} of the file"),
+        stat("Unique records", f"{D['unique_rows']:,}", "used for training and testing"),
+        stat("High share (unique)", pc(D['class_counts_unique']['High'] / D['unique_rows'], 0), f"{D['class_counts_unique']['High']:,} High, {D['class_counts_unique']['Low']:,} Low"),
         class_="stat-strip"),
     ui.div(
         ui.div(ui.h2("Class balance"),
                ui.output_ui("plot_balance"), class_="panel"),
         ui.div(ui.h2("Data quality"),
-               kv("Missing values", "None"),
-               kv("Predictors", f"{D['n_predictors']}"),
-               kv("Target", "rating (High or Low)"),
+               kv("Duplicate rows", f"{D['exact_duplicate_copies']}"),
+               kv("Conflicting-label groups", f"{D['conflicting_label_groups']}"),
                ui.output_ui("desc_table"), class_="panel"),
         class_="grid-2"),
 
@@ -258,24 +279,21 @@ insights_page = ui.div(
 
     ui.div(ui.span("C. Model performance"), class_="section-title"),
     ui.div(
-        stat("Accuracy", pc(T["accuracy"]), f"95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}"),
+        stat(f"Accuracy, {EVAL}", pc(T["accuracy"]), f"95% CI {pc(T['accuracy_ci95'][0])}–{pc(T['accuracy_ci95'][1])}"),
         stat("Balanced accuracy", pc(T["balanced_accuracy"]), "mean recall"),
         stat("Macro F1", pc(T["macro_f1"]), "mean F1"),
         stat("ROC AUC", f"{T['roc_auc']:.2f}", "area under curve"),
         class_="stat-strip"),
     ui.div(
-        ui.div(ui.h2(f"Confusion matrix ({D['test_rows']} test records)"),
+        ui.div(ui.h2(f"Confusion matrix ({EVAL}, n = {D['test_rows']})"),
                ui.output_ui("plot_cm"), class_="panel"),
-        ui.div(ui.h2("Per-class results"),
+        ui.div(ui.h2(f"Per-class results ({EVAL})"),
                ui.output_ui("report_table"),
                ui.h3("Models compared (5-fold CV)"),
                ui.output_ui("comparison_table"), class_="panel"),
         class_="grid-2"),
     ui.div(
-        ui.h2("Interpretation"),
-        ui.output_ui("interpretation"), class_="panel"),
-    ui.div(
-        ui.h2("Evaluation summary"),
+        ui.h2("Original vs deduplicated data"),
         ui.output_ui("target_note"), class_="panel"),
 
     ui.div(ui.span("D. What the model relies on"), class_="section-title"),
@@ -318,20 +336,20 @@ about_page = ui.div(
                    ui.p("Uses LMS activity (submissions, quizzes, forums, reads, logins) to estimate whether a student is likely to pass or fail, so instructors can identify who may need support early."),
                    ui.p("High is read as likely to pass and Low as likely to fail. The dataset provides High and Low labels only."), class_="panel"),
             ui.div(ui.h2("Dataset"),
-                   ui.p(f"augmented_balanced_dataset_m.csv: {D['rows_supplied']:,} rows, 8 predictors, 1 target (rating). The file contains {D['exact_duplicate_copies']} repeated rows, mostly in the Low class, which correspond to {D['unique_rows']:,} unique records ({D['class_counts_unique']['High']:,} High, {D['class_counts_unique']['Low']:,} Low). Source not stated."),
+                   ui.p(f"augmented_balanced_dataset_m.csv: {D['rows_supplied']:,} rows, 8 predictors, 1 target (rating). {D['exact_duplicate_copies']} duplicate rows; {D['unique_rows']:,} unique ({D['class_counts_unique']['High']:,} High, {D['class_counts_unique']['Low']:,} Low). Source not stated."),
                    table(["Variable", "Description"], [[f"<code>{f}</code>", VAR_DESC[f]] for f in FEATURES] +
                          [["<code>rating</code>", "Target class: High or Low"]]), class_="panel"),
             ui.div(ui.h2("Method"),
                    ui.HTML(f"""<ul class="clean">
-                   <li><b>Data:</b> dataset used as provided. No missing values; Read.Actions contains extreme outliers (max {int(DF['Read.Actions'].max()):,}).</li>
-                   <li><b>Split:</b> stratified 80/20 ({D['train_rows']:,} train, {D['test_rows']:,} test).</li>
-                   <li><b>Selection:</b> seven classifiers compared with 5-fold cross-validation on the training data, then the top three tuned.</li>
-                   <li><b>Evaluation:</b> the test set was used once, for the final assessment, and did not influence model selection or tuning.</li>
+                   <li><b>Cleaning:</b> {CLEAN_NOTE} No missing values; Read.Actions has extreme outliers (max {int(DF['Read.Actions'].max()):,}).</li>
+                   <li><b>Split:</b> stratified 80/20 ({D['train_rows']:,} train, {D['test_rows']:,} test{SPLIT_NOTE}).</li>
+                   <li><b>Evaluation:</b> 80/20 split on original and deduplicated data.</li>
+                   <li><b>Selection:</b> seven classifiers compared with 5-fold cross-validation, then tuned.{SEL_NOTE}</li>
                    <li><b>Final model:</b> {M['selected_model']} ({M['selected_params']['n_estimators']} trees), saved with Joblib.</li>
                    <li><b>Interpretation:</b> permutation importance, drop-one checks, partial dependence, calibration.</li></ul>"""),
                    class_="panel"),
             ui.div(ui.h2("Model results"),
-                   ui.p(f"{D['test_rows']} unseen records: {pc(T['accuracy'])} accuracy (95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}). "
+                   ui.p(f"{EVAL.capitalize()}, {D['test_rows']} test records: {pc(T['accuracy'])} accuracy (95% CI {pc(T['accuracy_ci95'][0])}–{pc(T['accuracy_ci95'][1])}). "
                         f"High: precision {pc(T['report']['High']['precision'])}, recall {pc(T['report']['High']['recall'])}. "
                         f"Low: precision {pc(T['report']['Low']['precision'])}, recall {pc(T['report']['Low']['recall'])}."),
                    ui.output_ui("about_target"), class_="panel"),
@@ -344,7 +362,7 @@ about_page = ui.div(
                    class_="panel"),
             ui.div(ui.h2("Limitations"),
                    ui.HTML(f"""<ul class="clean">
-                   <li><b>Data:</b> augmented file in which some rows appear more than once; {LK['test_rows_with_copy_in_train']} of {LK['test_rows']} test rows have an identical counterpart in the training data, which raises the reported accuracy. Accuracy is {pc(LK['accuracy_rows_without_copy'])} on test rows without a counterpart and {pc(LK['dedup_split_accuracy'])} on a de-duplicated split, which is the more realistic expectation for new students.</li>
+                   <li><b>Data:</b> {DATA_NOTE} Near-copies may remain.</li>
                    <li><b>Measures:</b> LMS click counts. Offline study is not captured; the rating's definition is not documented.</li>
                    <li><b>Scope:</b> one course population; very large values are sparse in training.</li>
                    <li><b>Interpretation:</b> importance reflects model use, not cause.</li>
@@ -353,16 +371,16 @@ about_page = ui.div(
             class_="col-main"),
         ui.div(
             ui.div(ui.h2("At a glance"),
-                   kv("Records", f"{D['rows_supplied']:,}"), kv("Predictors", f"{D['n_predictors']}"),
+                   kv("Records (unique)", f"{D['unique_rows']:,}"), kv("Predictors", f"{D['n_predictors']}"),
                    kv("Algorithm", M["selected_model"]), kv("Trees", f"{M['selected_params']['n_estimators']}"),
-                   kv("Test accuracy", pc(T["accuracy"])), kv("Balanced accuracy", pc(T["balanced_accuracy"])),
+                   kv("Accuracy, original data", pc(ORIG["acc"])), kv("Accuracy, deduplicated data", pc(DEDUP["acc"])),
                    class_="panel"),
             ui.div(ui.h2("Built with"),
                    kv("Language", "Python"), kv("Framework", "Shiny for Python"),
                    kv("Model package", "scikit-learn"), kv("Data", "pandas, NumPy"),
                    kv("Charts", "Matplotlib"), kv("Model file", "Joblib"), class_="panel"),
             ui.div(ui.h2("Developer information"), kv("Developer", DEVELOPERS[0]), kv("Email", DEVELOPER_EMAIL),
-                   class_="panel"),
+                   kv("University", UNIVERSITY), class_="panel"),
             class_="col-side"),
         class_="grid-2-wide", style="align-items:start"),
     class_="page")
@@ -532,7 +550,7 @@ def server(input, output, session):
         return charts.fig_local(result()["contrib"])
 
     # ---- insights: charts
-    @plot_ui("Class counts in the dataset")
+    @plot_ui("Class counts in the original file and after removing duplicates")
     def plot_balance():
         return charts.fig_class_balance(D["class_counts_supplied"], D["class_counts_unique"])
 
@@ -566,7 +584,7 @@ def server(input, output, session):
         rows = []
         for d in M["describe"]:
             rows.append([L[d["feature"]], f"{d['mean']:,.1f}", f"{d['50%']:,.0f}", f"{d['max']:,.0f}"])
-        return ui.div(ui.h3("Activity counts"), table(["Activity", "Mean", "Median", "Max"], rows, num={1, 2, 3}))
+        return ui.div(ui.h3("Activity counts (unique records)"), table(["Activity", "Mean", "Median", "Max"], rows, num={1, 2, 3}))
 
     @render.ui
     def compare_table():
@@ -587,37 +605,24 @@ def server(input, output, session):
         rows = [[c["model"], pc(c["cv_accuracy"]), pc(c["cv_balanced_accuracy"])] for c in M["model_comparison"]]
         return table(["Model", "Accuracy", "Balanced acc."], rows, num={1, 2}, hl=0)
 
-    @render.ui
-    def interpretation():
-        rep = T["report"]
-        cm = T["confusion_matrix"]
-        top = IMP_ORDER[:3]
-        verdict = (f"The model reaches <b>{pc(T['accuracy'])}</b> accuracy on {D['test_rows']} unseen records "
-                   f"(95% range {pc(T['accuracy_ci95'][0])} to {pc(T['accuracy_ci95'][1])}). "
-                   f"Always predicting the majority class would score {pc(D['majority_baseline_test'], 0)}.")
-        return ui.HTML(f"""<p>{verdict}</p>
-        <ul class="clean">
-        <li><b>Confusion matrix:</b> {cm[0][0]} High and {cm[1][1]} Low records were classified correctly. {cm[0][1]} High records were called Low and {cm[1][0]} Low records were called High.</li>
-        <li><b>High:</b> precision {pc(rep['High']['precision'])} (of records called High, this share were High) and recall {pc(rep['High']['recall'])} (of real High records, this share were found).</li>
-        <li><b>Low:</b> precision {pc(rep['Low']['precision'])} and recall {pc(rep['Low']['recall'])}. Balanced accuracy is {pc(T['balanced_accuracy'])} and ROC AUC is {T['roc_auc']:.2f}.</li>
-        <li><b>Drivers:</b> the largest accuracy drops when shuffled are {L[top[0]]}, {L[top[1]]} and {L[top[2]]}. This shows what the model uses, not what causes a rating.</li>
-        </ul>""")
+    def target_block():
+        return [
+            kv("Accuracy, original data", pc(ORIG["acc"])),
+            kv("Accuracy, deduplicated data", pc(DEDUP["acc"])),
+            kv("Test rows duplicated in training", f"{DUP_TEST[0]} of {DUP_TEST[1]}"),
+            kv("Algorithms compared", f"{len(M['model_comparison'])}"),
+            kv("Best cross-validated accuracy", pc(M["model_comparison"][0]["cv_accuracy"])),
+        ]
 
     @render.ui
     def target_note():
-        return ui.div(
-            kv("Test accuracy", pc(T["accuracy"])),
-            kv("Balanced accuracy", pc(T["balanced_accuracy"])),
-            kv("Algorithms compared", "7"),
-            kv("Best cross-validated accuracy", pc(M["model_comparison"][0]["cv_accuracy"])),
-            kv("Majority-class baseline", pc(D["majority_baseline_test"], 0)),
-        )
+        return ui.div(*target_block())
 
     @render.ui
     def about_target():
-        return ui.div(kv("Accuracy, all test rows", pc(T["accuracy"])),
-                      kv("Accuracy, rows with no training counterpart", pc(LK["accuracy_rows_without_copy"])),
-                      kv("Accuracy, de-duplicated split", pc(LK["dedup_split_accuracy"])))
+        if EVAL == "original data":
+            return kv("Accuracy, deduplicated data", pc(DEDUP["acc"]))
+        return kv("Accuracy, original data", pc(ORIG["acc"]))
 
     @render.ui
     def imp_table():
